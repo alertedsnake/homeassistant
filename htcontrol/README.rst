@@ -45,8 +45,8 @@ Here's how I have my TV and stereo setup.
           state_topic: "ht/status/marantz"
           state_on: "on"
           state_off: "off"
-          payload_on: "on"
-          payload_off: "off"
+          payload_on: "poweron"
+          payload_off: "poweroff"
           icon: mdi:radio
 
         - platform: mqtt
@@ -55,8 +55,8 @@ Here's how I have my TV and stereo setup.
           state_topic: "ht/status/sonytv"
           state_on: "on"
           state_off: "off"
-          payload_on: "on"
-          payload_off: "off"
+          payload_on: "poweron"
+          payload_off: "poweroff"
           icon: mdi:television
 
 
