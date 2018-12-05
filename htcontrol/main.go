@@ -36,31 +36,27 @@ func makeMessageHandler(status_topic string) mqtt.MessageHandler {
 	var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 		action := string(msg.Payload())
 
-		// verify payload - ignore anything but these
-		if action != "on" && action != "off" {
-			log.Debugf("Bogus payload on %s: %s", msg.Topic(), msg.Payload())
-			return
-		}
-
 		log.Infof("%s: %s", msg.Topic(), msg.Payload())
 
 		// Split up the topic, should be ht/control/device
 		parts := strings.Split(msg.Topic(), "/")
 		device := parts[2]
 
-		// handle this by sending 'poweron' or 'poweroff'
-		fullaction := fmt.Sprintf("power%s", action)
-		cmd := exec.Command("irsend", "send_once", device, fullaction)
+		// handle this by sending the action to the remote
+		cmd := exec.Command("irsend", "send_once", device, action)
 		err := cmd.Run()
 		if err != nil {
 			log.Errorf("Failed to run command %v: %v", cmd.Args, err)
 			return
 		}
 
-		// respond back with a status message
-		topic := fmt.Sprintf("%s/%s", status_topic, device)
-		token := client.Publish(topic, 0, false, msg.Payload())
-		token.Wait()
+		// if we just turned the thing on, respond back with a status
+                // message saying "on" or "off"
+                if action == "poweron" || action == "poweroff" {
+                    topic := fmt.Sprintf("%s/%s", status_topic, device)
+                    token := client.Publish(topic, 0, false, strings.Replace(action, "power", "", 1))
+                    token.Wait()
+                }
 	}
 	return f
 }
