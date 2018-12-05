@@ -1,0 +1,39 @@
+# python
+*.pyc
+__pycache__/*
+*.so
+
+# testing
+.venv
+.tox
+.cache
+
+# Python distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache
+
+# editor stuff
+.*.swp
+.*.swo
+.idea/
+
+# protobuf generated code
+*_pb2*.py
+
+# deploy automation stuff
+.build
+version.txt
