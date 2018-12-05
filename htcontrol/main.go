@@ -27,35 +27,42 @@ import (
 )
 
 const DEFAULT_BROKER = "127.0.0.1:1883"
-const DEFAULT_TOPIC_CONTROL = "ht/control/#"
+const DEFAULT_TOPIC_CONTROL = "ht/control"
 const DEFAULT_TOPIC_STATUS = "ht/status"
 
-var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-	log.Infof("%s: %s", msg.Topic(), msg.Payload())
-	action := string(msg.Payload())
+// make a message handler
+func makeMessageHandler(status_topic string) mqtt.MessageHandler {
 
-	// verify payload - ignore anything but these
-	if action != "on" && action != "off" {
-		return
+	var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+		action := string(msg.Payload())
+
+		// verify payload - ignore anything but these
+		if action != "on" && action != "off" {
+			log.Debugf("Bogus payload on %s: %s", msg.Topic(), msg.Payload())
+			return
+		}
+
+		log.Infof("%s: %s", msg.Topic(), msg.Payload())
+
+		// Split up the topic, should be ht/control/device
+		parts := strings.Split(msg.Topic(), "/")
+		device := parts[2]
+
+		// handle this by sending 'poweron' or 'poweroff'
+		fullaction := fmt.Sprintf("power%s", action)
+		cmd := exec.Command("irsend", "send_once", device, fullaction)
+		err := cmd.Run()
+		if err != nil {
+			log.Errorf("Failed to run command %v: %v", cmd.Args, err)
+			return
+		}
+
+		// respond back with a status message
+		topic := fmt.Sprintf("%s/%s", status_topic, device)
+		token := client.Publish(topic, 0, false, msg.Payload())
+		token.Wait()
 	}
-
-	// Split up the topic, should be ht/control/device
-	parts := strings.Split(msg.Topic(), "/")
-	device := parts[2]
-
-	// handle this by sending 'poweron' or 'poweroff'
-	fullaction := fmt.Sprintf("power%s", action)
-	cmd := exec.Command("irsend", "send_once", device, fullaction)
-	err := cmd.Run()
-	if err != nil {
-		log.Errorf("Failed to run command %v: %v", cmd.Args, err)
-		return
-	}
-
-	// respond back with a status message
-	topic := fmt.Sprintf("%s/%s", c.getString("topic"), device)
-	token := client.Publish(topic, 0, false, msg.Payload())
-	token.Wait()
+	return f
 }
 
 // run in server mode
@@ -63,9 +70,12 @@ func runServer(c *cli.Context) error {
 	channel := make(chan os.Signal, 1)
 	signal.Notify(channel, os.Interrupt, syscall.SIGTERM)
 
-	opts := mqtt.NewClientOptions().AddBroker(fmt.Sprintf("tcp://%s", c.GlobalString("broker")))
-	opts.SetClientID("htcontrol 0.1.0")
-	opts.SetDefaultPublishHandler(f)
+	handler := makeMessageHandler(c.GlobalString("status-topic"))
+
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(fmt.Sprintf("tcp://%s", string(c.GlobalString("broker"))))
+	opts.SetClientID(fmt.Sprintf("%s %s", c.App.Name, c.App.Version))
+	opts.SetDefaultPublishHandler(handler)
 	if c.GlobalString("username") != "" {
 		opts.SetUsername(c.GlobalString("username"))
 	}
@@ -75,13 +85,15 @@ func runServer(c *cli.Context) error {
 
 	opts.OnConnect = func(channel mqtt.Client) {
 		// subscribe to our topic
-		if token := channel.Subscribe(c.getString("topic"), 0, f); token.Wait() && token.Error() != nil {
-			log.Error("%v", token.Error())
+		topic := fmt.Sprintf("%s/#", c.GlobalString("control-topic"))
+		if token := channel.Subscribe(topic, 0, handler); token.Wait() && token.Error() != nil {
+			log.Fatalf("Subscribe error: %v", token.Error())
 		}
+		log.Infof("Subscribed to %s", c.GlobalString("control-topic"))
 	}
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("%v", token.Error())
+		return fmt.Errorf("Connection error: %v", token.Error())
 	}
 	log.Infof("Connected to server %v", c.GlobalString("broker"))
 
@@ -92,9 +104,9 @@ func runServer(c *cli.Context) error {
 // run in simple send mode
 func runSend(c *cli.Context) error {
 
-	opts := mqtt.NewClientOptions().AddBroker(fmt.Sprintf("tcp://%s", c.getString("broker")))
-	opts.SetClientID("htcontrol 0.1.0")
-	opts.SetDefaultPublishHandler(f)
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(fmt.Sprintf("tcp://%s", c.GlobalString("broker")))
+	opts.SetClientID(fmt.Sprintf("%s %s", c.App.Name, c.App.Version))
 	if c.GlobalString("username") != "" {
 		opts.SetUsername(c.GlobalString("username"))
 	}
@@ -113,7 +125,7 @@ func runSend(c *cli.Context) error {
 	}
 
 	// send to the 'status' topic
-	topic := fmt.Sprintf("%s/%s", c.String("topic"), device)
+	topic := fmt.Sprintf("%s/%s", c.GlobalString("status-topic"), device)
 	log.Debugf("%s -> %s", topic, status)
 	if token := client.Publish(topic, 0, false, status); token.Wait() && token.Error() != nil {
 		return fmt.Errorf("Publish error: %v", token.Error())
@@ -132,32 +144,18 @@ func runCli() error {
 		{
 			Name:   "send",
 			Action: runSend,
-			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:    "topic",
-					Usage:   "MQTT topic",
-					Default: DEFAULT_TOPIC_STATUS,
-				},
-			},
 		},
 		{
 			Name:   "serve",
 			Action: runServer,
-			Flags: []cli.Flag{
-				cli.StringFlag{
-					Name:    "topic",
-					Usage:   "MQTT topic",
-					Default: DEFAULT_TOPIC_CONTROL,
-				},
-			},
 		},
 	}
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:    "broker, b",
-			Usage:   "MQTT broker",
-			EnvVar:  "MQTT_broker",
-			Default: DEFAULT_BROKER,
+			Name:   "broker, b",
+			Usage:  "MQTT broker",
+			EnvVar: "MQTT_broker",
+			Value:  DEFAULT_BROKER,
 		},
 		cli.StringFlag{
 			Name:   "username, u",
@@ -170,6 +168,17 @@ func runCli() error {
 			EnvVar: "MQTT_password",
 		},
 
+		cli.StringFlag{
+			Name:  "status-topic",
+			Usage: "MQTT topic for status messages",
+			Value: DEFAULT_TOPIC_STATUS,
+		},
+		cli.StringFlag{
+			Name:  "control-topic",
+			Usage: "MQTT topic for control messages",
+			Value: DEFAULT_TOPIC_CONTROL,
+		},
+
 		cli.BoolFlag{
 			Name:  "debug",
 			Usage: "Enable verbose debugging",
@@ -180,6 +189,11 @@ func runCli() error {
 		if c.Bool("debug") {
 			log.SetLevel(log.DebugLevel)
 		}
+
+		log.Debugf("Broker: %s", c.GlobalString("broker"))
+		log.Debugf("Username: %s", c.GlobalString("username"))
+		log.Debugf("Topic: Control: %s", c.GlobalString("control-topic"))
+		log.Debugf("Topic: Status: %s", c.GlobalString("status-topic"))
 		return nil
 	}
 
