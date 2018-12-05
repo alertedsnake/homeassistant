@@ -6,24 +6,27 @@ A really basic "home theatre control" client program for use with the MQTT_
 component in `Home Assistant`_, which can turn on and off my TV and stereo
 via a Iguanaworks_ IR device.
 
-This progam can do two things:
+The main reason for this is that my RaspberryPi which runs Home Assistant is
+not the same one which runs Kodi and has the IR controller.
+
+So.  This progam can do two things:
 
 Server
 ------
-In this mode, we watch a topic for specific messages, and then run ``irsend``
-to send IR signals as if we pushed a remote control button.
+In this mode, we watch a MQTT topic for specific messages, and then run
+``irsend`` to send IR signals as if we pushed a remote control button.
 
 Sender
 ------
-In this mode, the program will act as a simple client to send status messages
-back if certain IR signals have been received.  Because you want to know when
-someone turned the device on with a remote rather than via the HT system.
+In this mode, the program will act as a simple client to publish status messages
+via MQTT if certain IR signals have been received.  Because you want to know
+when someone turned the device on with a remote rather than via Home Assistant.
 
 
 Building
 ========
 
-Run ``make``.
+Have go.  Run ``make``.
 
 Use
 ===
