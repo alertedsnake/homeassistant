@@ -96,7 +96,7 @@ Obviously, provide user/password details, and use the names of your own remotes.
 systemd
 -------
 
-I'm using this sytstemd unit file::
+I'm using this systemd unit file::
 
     [Unit]
     Description=Home Theatre Control
