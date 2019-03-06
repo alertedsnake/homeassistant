@@ -1,5 +1,5 @@
 APPNAME := htcontrol
-VERSION ?= 0.1.1
+VERSION ?= 0.2.0
 GOPATH  ?= ${HOME}/.gopath
 GOBIN   ?= $(GOPATH)/bin
 DEPENDENCIES := $(shell go list -f '{{ join .Imports "\n" }}')

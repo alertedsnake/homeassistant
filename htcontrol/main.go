@@ -13,6 +13,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 	"gopkg.in/urfave/cli.v1"
@@ -29,6 +31,54 @@ import (
 const DEFAULT_BROKER = "127.0.0.1:1883"
 const DEFAULT_TOPIC_CONTROL = "ht/control"
 const DEFAULT_TOPIC_STATUS = "ht/status"
+const DEVTYPE_IR = "ir"
+const DEVTYPE_CEC = "cec"
+
+// devices -> types
+var devices = map[string]string{
+	"sonytv":  DEVTYPE_IR,
+	"marantz": DEVTYPE_IR,
+	"lgtv":    DEVTYPE_CEC,
+}
+
+func runIrsend(device string, action string) (err error) {
+	cmd := exec.Command("irsend", "send_once", device, action)
+	err = cmd.Run()
+	if err != nil {
+		err = errors.Wrapf(err, "Failed to run command %v", cmd.Args)
+	}
+	return
+}
+
+func runCEC(device string, action string) error {
+
+	// default is to just ping the adapter
+	input := "ping"
+
+	switch action {
+	case "poweron":
+		input = "on 0"
+	case "poweroff":
+		input = "standby 0"
+	}
+
+	cmd := exec.Command("cec-client-4.0.2", "-d", "1", "RPI")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return errors.Wrapf(err, "Failed to create stdin pipe")
+	}
+	go func() {
+		defer stdin.Close()
+		io.WriteString(stdin, input)
+	}()
+
+	err = cmd.Run()
+	if err != nil {
+		err = errors.Wrapf(err, "Failed to run command %v", cmd.Args)
+	}
+
+	return nil
+}
 
 // make a message handler
 func makeMessageHandler(status_topic string) mqtt.MessageHandler {
@@ -43,20 +93,31 @@ func makeMessageHandler(status_topic string) mqtt.MessageHandler {
 		device := parts[2]
 
 		// handle this by sending the action to the remote
-		cmd := exec.Command("irsend", "send_once", device, action)
-		err := cmd.Run()
-		if err != nil {
-			log.Errorf("Failed to run command %v: %v", cmd.Args, err)
-			return
+		devtype, ok := devices[device]
+		if !ok {
+			log.Errorf("Invalid device '%s', device")
+		}
+
+		switch devtype {
+		case DEVTYPE_IR:
+			if err := runIrsend(device, action); err != nil {
+				log.Errorf("Error sending IR message: %v", err)
+				return
+			}
+		case DEVTYPE_CEC:
+			if err := runCEC(device, action); err != nil {
+				log.Errorf("Error sending CEC command: %v", err)
+				return
+			}
 		}
 
 		// if we just turned the thing on, respond back with a status
-                // message saying "on" or "off"
-                if action == "poweron" || action == "poweroff" {
-                    topic := fmt.Sprintf("%s/%s", status_topic, device)
-                    token := client.Publish(topic, 0, false, strings.Replace(action, "power", "", 1))
-                    token.Wait()
-                }
+		// message saying "on" or "off"
+		if action == "poweron" || action == "poweroff" {
+			topic := fmt.Sprintf("%s/%s", status_topic, device)
+			token := client.Publish(topic, 0, false, strings.Replace(action, "power", "", 1))
+			token.Wait()
+		}
 	}
 	return f
 }
