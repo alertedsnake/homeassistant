@@ -20,15 +20,34 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alertedsnake/homeassistant/htcontrol/config"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	prefixed "github.com/x-cray/logrus-prefixed-formatter"
 	"gopkg.in/urfave/cli.v1"
 )
 
-const DEFAULT_BROKER = "127.0.0.1:1883"
-const DEFAULT_TOPIC_CONTROL = "ht/control"
-const DEFAULT_TOPIC_STATUS = "ht/status"
+const (
+	DEFAULT_BROKER        = "127.0.0.1:1883"
+	DEFAULT_TOPIC_CONTROL = "ht/control"
+	DEFAULT_TOPIC_STATUS  = "ht/status"
+)
+
+var (
+	VERSION = "0.1.0-alpha1"
+	CFGARGS = []string{"broker", "username", "password", "control-topic", "status-topic"}
+	cfg     *config.Config
+)
+
+func runIrsend(device string, action string) (err error) {
+	cmd := exec.Command("irsend", "send_once", device, action)
+	err = cmd.Run()
+	if err != nil {
+		err = errors.Wrapf(err, "Failed to run command %v", cmd.Args)
+	}
+	return
+}
 
 // make a message handler
 func makeMessageHandler(status_topic string) mqtt.MessageHandler {
@@ -43,20 +62,17 @@ func makeMessageHandler(status_topic string) mqtt.MessageHandler {
 		device := parts[2]
 
 		// handle this by sending the action to the remote
-		cmd := exec.Command("irsend", "send_once", device, action)
-		err := cmd.Run()
-		if err != nil {
-			log.Errorf("Failed to run command %v: %v", cmd.Args, err)
+		if err := runIrsend(device, action); err != nil {
+			log.Errorf("Error sending IR message: %v", err)
 			return
 		}
 
-		// if we just turned the thing on, respond back with a status
-                // message saying "on" or "off"
-                if action == "poweron" || action == "poweroff" {
-                    topic := fmt.Sprintf("%s/%s", status_topic, device)
-                    token := client.Publish(topic, 0, false, strings.Replace(action, "power", "", 1))
-                    token.Wait()
-                }
+		// respond back with a status // message saying "on" or "off"
+		if action == "poweron" || action == "poweroff" {
+			topic := fmt.Sprintf("%s/%s", status_topic, device)
+			token := client.Publish(topic, 0, false, strings.Replace(action, "power", "", 1))
+			token.Wait()
+		}
 	}
 	return f
 }
@@ -66,32 +82,32 @@ func runServer(c *cli.Context) error {
 	channel := make(chan os.Signal, 1)
 	signal.Notify(channel, os.Interrupt, syscall.SIGTERM)
 
-	handler := makeMessageHandler(c.GlobalString("status-topic"))
+	handler := makeMessageHandler(cfg.GetString("status-topic"))
 
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("tcp://%s", string(c.GlobalString("broker"))))
+	opts.AddBroker(fmt.Sprintf("tcp://%s", string(cfg.GetString("broker"))))
 	opts.SetClientID(fmt.Sprintf("%s %s", c.App.Name, c.App.Version))
 	opts.SetDefaultPublishHandler(handler)
-	if c.GlobalString("username") != "" {
-		opts.SetUsername(c.GlobalString("username"))
+	if cfg.GetString("username") != "" {
+		opts.SetUsername(cfg.GetString("username"))
 	}
-	if c.GlobalString("password") != "" {
-		opts.SetPassword(c.GlobalString("password"))
+	if cfg.GetString("password") != "" {
+		opts.SetPassword(cfg.GetString("password"))
 	}
 
 	opts.OnConnect = func(channel mqtt.Client) {
 		// subscribe to our topic
-		topic := fmt.Sprintf("%s/#", c.GlobalString("control-topic"))
+		topic := fmt.Sprintf("%s/#", cfg.GetString("control-topic"))
 		if token := channel.Subscribe(topic, 0, handler); token.Wait() && token.Error() != nil {
-			log.Fatalf("Subscribe error: %v", token.Error())
+			log.Fatalf("MQTT Subscribe error: %v", token.Error())
 		}
-		log.Infof("Subscribed to %s", c.GlobalString("control-topic"))
+		log.Infof("Subscribed to %s", cfg.GetString("control-topic"))
 	}
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("Connection error: %v", token.Error())
+		return fmt.Errorf("MQTT Connection error: %v", token.Error())
 	}
-	log.Infof("Connected to server %v", c.GlobalString("broker"))
+	log.Infof("Connected to server %v", cfg.GetString("broker"))
 
 	<-channel
 	return nil
@@ -101,13 +117,13 @@ func runServer(c *cli.Context) error {
 func runSend(c *cli.Context) error {
 
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("tcp://%s", c.GlobalString("broker")))
+	opts.AddBroker(fmt.Sprintf("tcp://%s", cfg.GetString("broker")))
 	opts.SetClientID(fmt.Sprintf("%s %s", c.App.Name, c.App.Version))
-	if c.GlobalString("username") != "" {
-		opts.SetUsername(c.GlobalString("username"))
+	if cfg.GetString("username") != "" {
+		opts.SetUsername(cfg.GetString("username"))
 	}
-	if c.GlobalString("password") != "" {
-		opts.SetPassword(c.GlobalString("password"))
+	if cfg.GetString("password") != "" {
+		opts.SetPassword(cfg.GetString("password"))
 	}
 	opts.SetKeepAlive(2 * time.Second)
 
@@ -117,14 +133,14 @@ func runSend(c *cli.Context) error {
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("Connection error: %v", token.Error())
+		return fmt.Errorf("MQTT Connection error: %v", token.Error())
 	}
 
 	// send to the 'status' topic
-	topic := fmt.Sprintf("%s/%s", c.GlobalString("status-topic"), device)
+	topic := fmt.Sprintf("%s/%s", cfg.GetString("status-topic"), device)
 	log.Debugf("%s -> %s", topic, status)
 	if token := client.Publish(topic, 0, false, status); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("Publish error: %v", token.Error())
+		return fmt.Errorf("MQTT Publish error: %v", token.Error())
 	}
 	client.Disconnect(250)
 	return nil
@@ -148,31 +164,29 @@ func runCli() error {
 	}
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:   "broker, b",
-			Usage:  "MQTT broker",
-			EnvVar: "MQTT_broker",
-			Value:  DEFAULT_BROKER,
+			Name:  "config, c",
+			Usage: "Config file",
 		},
 		cli.StringFlag{
-			Name:   "username, u",
-			Usage:  "MQTT username",
-			EnvVar: "MQTT_username",
+			Name:  "broker, b",
+			Usage: "MQTT broker",
 		},
 		cli.StringFlag{
-			Name:   "password, p",
-			Usage:  "MQTT password",
-			EnvVar: "MQTT_password",
+			Name:  "username, u",
+			Usage: "MQTT username",
+		},
+		cli.StringFlag{
+			Name:  "password, p",
+			Usage: "MQTT password",
 		},
 
 		cli.StringFlag{
 			Name:  "status-topic",
 			Usage: "MQTT topic for status messages",
-			Value: DEFAULT_TOPIC_STATUS,
 		},
 		cli.StringFlag{
 			Name:  "control-topic",
 			Usage: "MQTT topic for control messages",
-			Value: DEFAULT_TOPIC_CONTROL,
 		},
 
 		cli.BoolFlag{
@@ -185,11 +199,31 @@ func runCli() error {
 		if c.Bool("debug") {
 			log.SetLevel(log.DebugLevel)
 		}
+		cfg = config.New()
+		cfg.Set("status-topic", DEFAULT_TOPIC_STATUS)
+		cfg.Set("control-topic", DEFAULT_TOPIC_CONTROL)
+		cfg.Set("broker", DEFAULT_BROKER)
 
-		log.Debugf("Broker: %s", c.GlobalString("broker"))
-		log.Debugf("Username: %s", c.GlobalString("username"))
-		log.Debugf("Topic: Control: %s", c.GlobalString("control-topic"))
-		log.Debugf("Topic: Status: %s", c.GlobalString("status-topic"))
+		// read config file
+		if c.GlobalString("config") != "" {
+			var err error
+			cfg, err = config.Load(c.GlobalString("config"))
+			if err != nil {
+				return err
+			}
+		}
+
+		// allow command-line overrides
+		for _, val := range CFGARGS {
+			if c.GlobalString(val) != "" {
+				cfg.Set(val, c.GlobalString(val))
+			}
+		}
+
+		log.Debugf("Broker: %s", cfg.GetString("broker"))
+		log.Debugf("Username: %s", cfg.GetString("username"))
+		log.Debugf("Topic: Control: %s", cfg.GetString("control-topic"))
+		log.Debugf("Topic: Status: %s", cfg.GetString("status-topic"))
 		return nil
 	}
 
@@ -204,8 +238,7 @@ func main() {
 	log.SetLevel(log.InfoLevel)
 
 	// run the program
-	err := runCli()
-	if err != nil {
+	if err := runCli(); err != nil {
 		log.Error(err)
 		os.Exit(1)
 	}
